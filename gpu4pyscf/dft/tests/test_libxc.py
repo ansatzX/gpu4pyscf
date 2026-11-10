@@ -148,6 +148,42 @@ class KnownValues(unittest.TestCase):
         ni.omega = 0.175
         assert ni.to_cpu().omega == 0.175
 
+    def _cam_omegas(self, ni, xc, spin=0):
+        '''cam_omega of every range-separated GPU libxc functional component,
+        read from the libxc struct itself (not from ni.omega, which is just
+        the attribute that was assigned and therefore proves nothing).'''
+        out = []
+        for fun, _ in ni._init_xcfuns(xc, spin):
+            w = float(fun.xc_func.contents.cam_omega)
+            if w != 0.0:
+                out.append(w)
+        return out
+
+    def test_cam_omega_reaches_gpu_libxc(self):
+        # Regression test for the 1.8.1 bug: mf.omega / ni.omega only reached
+        # the exact-exchange K build, while the GPU libxc semilocal part kept
+        # libxc's default (e.g. 0.2 for ITYH). Checks the functional struct.
+        for xc, omega in [('CAM_B3LYP', 0.175),
+                          ('HYB_GGA_XC_LRC_WPBEH', 0.1),
+                          ('LR_HF(0.3)+ITYH,LYP', 0.175)]:
+            for spin in (0, 1):
+                ni = numint_gpu()
+                ni.omega = omega
+                cams = self._cam_omegas(ni, xc, spin)
+                assert cams, f'{xc}: no range-separated component found'
+                assert all(abs(w - omega) < 1e-12 for w in cams), (xc, spin, cams)
+
+        # omega declared in xc_code is honoured when ni.omega is not set
+        ni = numint_gpu()
+        cams = self._cam_omegas(ni, 'LR_HF(0.3)+ITYH,LYP')
+        assert cams and all(abs(w - 0.3) < 1e-12 for w in cams), cams
+
+        # the override must not leak through the functional cache
+        ni = numint_gpu()
+        ref = numint_cpu().rsh_and_hybrid_coeff('HYB_GGA_XC_LRC_WPBEH')[0]
+        cams = self._cam_omegas(ni, 'HYB_GGA_XC_LRC_WPBEH')
+        assert cams and all(abs(w - ref) < 1e-12 for w in cams), (cams, ref)
+
 if __name__ == "__main__":
     print("Full Tests for xc fun")
     unittest.main()
